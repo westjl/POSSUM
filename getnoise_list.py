@@ -8,6 +8,7 @@ import numpy as np
 from spectral_cube import SpectralCube
 from tqdm import tqdm, tnrange
 import schwimmbad
+from functools import partial
 
 
 def myfit(x, y, fn):
@@ -40,9 +41,11 @@ def myfit(x, y, fn):
     return w
 
 
-def calcnoise(plane):
+def calcnoise(args):
     """Get noise in plane from cube.
     """
+    cube, i = args
+    plane = cube[i]
     imsize = plane.shape
     print('imsize is', imsize)
     assert len(imsize) == 2
@@ -79,7 +82,6 @@ def getcube(filename):
     cube = cube.with_mask(mask)
     return cube
 
-
 def main(args):
     pool = schwimmbad.choose_pool(mpi=args.mpi, processes=args.n_cores)
     if args.mpi:
@@ -88,12 +90,16 @@ def main(args):
             sys.exit(0)
     
     print(f"Using pool: {pool.__class__.__name__}")
-    
+
     qcube = getcube(args.qfitslist)
     ucube = getcube(args.ufitslist)
     assert len(ucube.spectral_axis) == len(qcube.spectral_axis)
-    qnoisevals = pool.map(calcnoise, [plane for plane in qcube])
-    unoisevals = pool.map(calcnoise, [plane for plane in ucube])
+
+    inputs = [i for i in range(len(ucube.spectral_axis))]
+    qnoisevals = np.array(list(pool.map(calcnoise, zip(args.n_cores * [qcube], inputs))))
+
+    
+    unoisevals = np.array(list(pool.map(calcnoise, inputs)))
     
     qmeannoise = np.median(qnoisevals[abs(qnoisevals) < 1.])
     qstdnoise = np.std(qnoisevals[abs(qnoisevals) < 1.])

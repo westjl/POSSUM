@@ -1,8 +1,13 @@
 #!/usr/bin/env python
-from astropy.io import fits
-import numpy as np
 import os
 import glob
+import sys
+from astropy.io import fits
+import astropy.units as u
+import numpy as np
+from spectral_cube import SpectralCube
+from tqdm import tqdm, tnrange
+import schwimmbad
 
 
 def myfit(x, y, fn):
@@ -35,44 +40,61 @@ def myfit(x, y, fn):
     return w
 
 
-def calcnoise(fitsfile):
-    with fits.open(fitsfile, mode='denywrite', memmap=True) as h:
-        d = np.squeeze(h[0].data)
-        imsize = d.shape
-        assert len(imsize) == 2
-        nx = imsize[-1]
-        ny = imsize[-2]
-        Id = d[ny/3:2*ny/3, nx/3:2*nx/3].flatten()
-        if len(Id[np.isnan(Id)]) == len(Id):
+def calcnoise(plane):
+    """Get noise in plane from cube.
+    """
+    imsize = plane.shape
+    print('imsize is', imsize)
+    assert len(imsize) == 2
+    nx = imsize[-1]
+    ny = imsize[-2]
+    Id = plane[ny//3:2*ny//3, nx//3:2*nx//3].flatten()
+    if len(Id[np.isnan(Id)]) == len(Id):
+        return -1.
+    else:
+        rms = np.std(Id)
+        mval = np.mean(Id)
+        Id = Id[np.logical_and(Id < mval+3.*rms, Id > mval-3.*rms)]
+        # print mval,rms,len(Id)
+
+        #hrange = (-1,1)
+        # , range=hrange) # 0 = values, 1 = left bin edges
+        Ih = np.histogram(Id, bins=100)
+        if max(Ih[0]) == 0.:
             return -1.
-        else:
-            rms = np.std(Id)
-            mval = np.mean(Id)
-            Id = Id[np.logical_and(Id < mval+3.*rms, Id > mval-3.*rms)]
-            # print mval,rms,len(Id)
+        Ix = Ih[1][:-1] + 0.5*(Ih[1][1] - Ih[1][0])
+        Iv = Ih[0]/float(max(Ih[0]))
+        Inoise = myfit(Ix, Iv, '')
+        return Inoise
 
-            #hrange = (-1,1)
-            # , range=hrange) # 0 = values, 1 = left bin edges
-            Ih = np.histogram(Id, bins=100)
-            if max(Ih[0]) == 0.:
-                return -1.
-            Ix = Ih[1][:-1] + 0.5*(Ih[1][1] - Ih[1][0])
-            Iv = Ih[0]/float(max(Ih[0]))
-            Inoise = myfit(Ix, Iv, '')
 
-            return Inoise
+def getcube(filename):
+    """Read FITS file as SpectralCube
+
+    Masks out 0Jy/beam pixels
+
+    """
+    cube = SpectralCube.read(filename)
+    mask = ~(cube == 0*u.jansky/u.beam)
+    cube = cube.with_mask(mask)
+    return cube
 
 
 def main(args):
-    qfitslist = sorted(glob.glob(args.qfitslist))
-    ufitslist = sorted(glob.glob(args.ufitslist))
-    assert len(qfitslist) == len(ufitslist)
-    qnoisevals = np.zeros(len(qfitslist))
-    unoisevals = np.zeros(len(ufitslist))
-    for i, fitsfile in enumerate(qfitslist):
-        qnoisevals[i] = calcnoise(fitsfile)
-    for i, fitsfile in enumerate(ufitslist):
-        unoisevals[i] = calcnoise(fitsfile)
+    pool = schwimmbad.choose_pool(mpi=args.mpi, processes=args.n_cores)
+    if args.mpi:
+        if not pool.is_master():
+            pool.wait()
+            sys.exit(0)
+    
+    print(f"Using pool: {pool.__class__.__name__}")
+    
+    qcube = getcube(args.qfitslist)
+    ucube = getcube(args.ufitslist)
+    assert len(ucube.spectral_axis) == len(qcube.spectral_axis)
+    qnoisevals = pool.map(calcnoise, [plane for plane in qcube])
+    unoisevals = pool.map(calcnoise, [plane for plane in ucube])
+    
     qmeannoise = np.median(qnoisevals[abs(qnoisevals) < 1.])
     qstdnoise = np.std(qnoisevals[abs(qnoisevals) < 1.])
     print('Q median, std:', qmeannoise, qstdnoise)
@@ -84,12 +106,12 @@ def main(args):
     ubadones = np.logical_or(unoisevals > (
         umeannoise+args.cliplev*ustdnoise), unoisevals == -1.)
     print(sum(np.asarray(qbadones, dtype=int)),
-          'of', len(qfitslist), 'are bad (Q)')
+          'of', len(qcube.spectral_axis), 'are bad (Q)')
     print(sum(np.asarray(ubadones, dtype=int)),
-          'of', len(ufitslist), 'are bad (U)')
+          'of', len(ucube.spectral_axis), 'are bad (U)')
     totalbad = np.logical_or(qbadones, ubadones)
     print(sum(np.asarray(totalbad, dtype=int)), 'of',
-          len(qfitslist), 'are bad in Q -or- U')
+          len(qcube.spectral_axis), 'are bad in Q -or- U')
     # print fitslist[np.asarray(badones,dtype=int)]
     if not args.delete:
         print('Nothing will be deleted, but these are the files that would be with the -d option activated:')
@@ -109,8 +131,35 @@ if __name__ == "__main__":
     ap.add_argument('qfitslist', help='Wildcard list of Q fits files')
     ap.add_argument('ufitslist', help='Wildcard list of U fits files')
     ap.add_argument(
-        '--delete', '-d', help='Delete bad channel maps? [default False]', default=False, action='store_true')
-    ap.add_argument('--cliplev', '-c',
-                    help='Clip level in sigma, make this number lower to be more aggressive [default 5]', default=5., type=float)
+        '--delete',
+        '-d',
+        help='Delete bad channel maps? [default False]',
+        default=False,
+        action='store_true'
+    )
+    ap.add_argument(
+        '--cliplev',
+        '-c',
+        help='Clip level in sigma, make this number lower to be more aggressive [default 5]',
+        default=5.,
+        type=float
+    )
+    group = ap.add_mutually_exclusive_group()
+
+    group.add_argument(
+        "--ncores",
+        dest="n_cores",
+        default=1,
+        type=int, help="Number of processes (uses multiprocessing)."
+    )
+    group.add_argument(
+        "--mpi",
+        dest="mpi",
+        default=False,
+        action="store_true",
+        help="Run with MPI."
+    )
+
     args = ap.parse_args()
+
     main(args)

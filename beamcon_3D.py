@@ -15,6 +15,7 @@ import ctypes as c
 from tqdm import tqdm, trange
 import au2
 import functools
+from mpi4py import MPI
 print = functools.partial(print, flush=True)
 
 
@@ -201,6 +202,16 @@ def init_worker():
 
 def main(args, verbose=True):
     # Fix up outdir
+    if args.mpi:
+        pool = schwimmbad.MPIPool()
+
+        if not pool.is_master():
+            pool.wait()
+            sys.exit(0)
+
+        mpiComm = MPI.COMM_WORLD
+        n_cores = mpiComm.Get_size()
+        #mpiRank = mpiComm.Get_rank()
     outdir = args.outdir
     if outdir is not None:
         if outdir[-1] == '/':
@@ -305,7 +316,9 @@ def main(args, verbose=True):
         cubedict["conbeams"] = conbms
         cubedict["sfactors"] = facs
 
-        width_max = args.n_cores
+        if not args.mpi:
+            n_cores = args.n_cores
+        width_max = n_cores
         width = cpu_to_use(width_max, cube.shape[0])
         n_chunks = cube.shape[0]//width
 

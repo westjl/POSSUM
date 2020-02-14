@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import os
+import sys
 import numpy as np
 import scipy.signal
 from astropy import units as u
@@ -8,6 +9,7 @@ from radio_beam import Beam, Beams
 from glob import glob
 import au2
 import functools
+import schwimmbad
 print = functools.partial(print, flush=True)
 
 #############################################
@@ -283,14 +285,12 @@ def cli():
                        action="store_true", help="Run with MPI.")
 
     args = parser.parse_args()
-    try:
-        import schwimmbad
-        pool = schwimmbad.choose_pool(mpi=args.mpi, processes=args.n_cores)
-    except ModuleNotFoundError:
-        import multiprocessing as mp
-        pool = mp.Pool(processes=args.n_cores)
-        if args.mpi or args.n_cores == 1:
-            raise Exception('Please use Schwimmbad!')
+
+    pool = schwimmbad.choose_pool(mpi=args.mpi, processes=args.n_cores)
+    if args.mpi:
+        if not pool.is_master():
+            pool.wait()
+            sys.exit(0)
 
     verbose = args.verbose
 

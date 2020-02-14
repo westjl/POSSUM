@@ -1,14 +1,9 @@
 #!/usr/bin/env python
-import os
-import glob
-import sys
-from astropy.io import fits
+
 import astropy.units as u
 import numpy as np
 from spectral_cube import SpectralCube
-from tqdm import tqdm, tnrange
-import schwimmbad
-from functools import partial
+from tqdm import tqdm, trange
 
 
 def myfit(x, y, fn):
@@ -41,13 +36,10 @@ def myfit(x, y, fn):
     return w
 
 
-def calcnoise(args):
+def calcnoise(plane):
     """Get noise in plane from cube.
     """
-    cube, i = args
-    plane = cube[i]
     imsize = plane.shape
-    print('imsize is', imsize)
     assert len(imsize) == 2
     nx = imsize[-1]
     ny = imsize[-2]
@@ -68,7 +60,7 @@ def calcnoise(args):
         Ix = Ih[1][:-1] + 0.5*(Ih[1][1] - Ih[1][0])
         Iv = Ih[0]/float(max(Ih[0]))
         Inoise = myfit(Ix, Iv, '')
-        return Inoise
+        return Inoise.value
 
 
 def getcube(filename):
@@ -82,25 +74,21 @@ def getcube(filename):
     cube = cube.with_mask(mask)
     return cube
 
-def main(args):
-    pool = schwimmbad.choose_pool(mpi=args.mpi, processes=args.n_cores)
-    if args.mpi:
-        if not pool.is_master():
-            pool.wait()
-            sys.exit(0)
-    
-    print(f"Using pool: {pool.__class__.__name__}")
 
-    qcube = getcube(args.qfitslist)
-    ucube = getcube(args.ufitslist)
+def getbadchans(qcube, ucube, cliplev=5):
+    """Find deviated channels
+    """
     assert len(ucube.spectral_axis) == len(qcube.spectral_axis)
+    qnoisevals = []
+    for plane in tqdm(qcube, desc='Checking Q'):
+        qnoisevals.append(calcnoise(plane))
+    qnoisevals = np.array(qnoisevals)
 
-    inputs = [i for i in range(len(ucube.spectral_axis))]
-    qnoisevals = np.array(list(pool.map(calcnoise, zip(args.n_cores * [qcube], inputs))))
+    unoisevals = []
+    for plane in tqdm(ucube, desc='Checking U'):
+        unoisevals.append(calcnoise(plane))
+    unoisevals = np.array(unoisevals)
 
-    
-    unoisevals = np.array(list(pool.map(calcnoise, inputs)))
-    
     qmeannoise = np.median(qnoisevals[abs(qnoisevals) < 1.])
     qstdnoise = np.std(qnoisevals[abs(qnoisevals) < 1.])
     print('Q median, std:', qmeannoise, qstdnoise)
@@ -108,9 +96,9 @@ def main(args):
     ustdnoise = np.std(unoisevals[abs(unoisevals) < 1.])
     print('U median, std:', umeannoise, ustdnoise)
     qbadones = np.logical_or(qnoisevals > (
-        qmeannoise+args.cliplev*qstdnoise), qnoisevals == -1.)
+        qmeannoise+cliplev*qstdnoise), qnoisevals == -1.)
     ubadones = np.logical_or(unoisevals > (
-        umeannoise+args.cliplev*ustdnoise), unoisevals == -1.)
+        umeannoise+cliplev*ustdnoise), unoisevals == -1.)
     print(sum(np.asarray(qbadones, dtype=int)),
           'of', len(qcube.spectral_axis), 'are bad (Q)')
     print(sum(np.asarray(ubadones, dtype=int)),
@@ -118,17 +106,54 @@ def main(args):
     totalbad = np.logical_or(qbadones, ubadones)
     print(sum(np.asarray(totalbad, dtype=int)), 'of',
           len(qcube.spectral_axis), 'are bad in Q -or- U')
+    return totalbad
+
+
+def blankchans(qcube, ucube, totalbad, blank=False):
+    """Mask out bad chans
+    """
+    chans = np.array([i for i, chan in enumerate(qcube.spectral_axis)])
+    badchans = chans[totalbad]
+    badfreqs = qcube.spectral_axis[totalbad]
+    if not blank:
+        print('Nothing will be blanked, but these are the channels/frequencies that would be with the -b option activated:')
+    print(f'Bad channels are {badchans}')
+    print(f'Bad frequencies are {badfreqs}')
+    totalgood = [not bad for bad in totalbad]
+    q_msk = qcube.mask_channels(totalgood)
+    u_msk = ucube.mask_channels(totalgood)
+    if not args.blank:
+        print('Nothing in the above list was blanked, use -b to take that action')
+    return q_msk, u_msk
+
+
+def writefits(qcube, ucube, clargs):
+    """Write output to disk
+    """
+    outfile = clargs.qfitslist.replace('.fits', '.blanked.fits')
+    print(f'Writing to {outfile}')
+    qcube.write(outfile, format='fits', overwrite=True)
+    outfile = clargs.ufitslist.replace('.fits', '.blanked.fits')
+    print(f'Writing to {outfile}')
+    ucube.write(outfile, format='fits', overwrite=True)
+
+def main(clargs):
+    qcube = getcube(clargs.qfitslist)
+    ucube = getcube(clargs.ufitslist)
+
+    totalbad = getbadchans(qcube, ucube, cliplev=clargs.cliplev)
     # print fitslist[np.asarray(badones,dtype=int)]
-    if not args.delete:
-        print('Nothing will be deleted, but these are the files that would be with the -d option activated:')
-    for i, f in enumerate(qfitslist):
-        if totalbad[i]:
-            print(qfitslist[i], ufitslist[i])
-            if args.delete:
-                os.remove(qfitslist[i])
-                os.remove(ufitslist[i])
-    if not args.delete:
-        print('Nothing in the above list was deleted, use -d to take that action')
+
+    q_msk, u_msk = blankchans(qcube, ucube, totalbad, blank=clargs.blank)
+
+    if clargs.iterate is not None:
+        print(f'Iterating {clargs.iterate} additional time(s)...')
+        for i in range(clargs.iterate):
+            totalbad = getbadchans(q_msk, u_msk, cliplev=clargs.cliplev)
+            q_msk, u_msk = blankchans(q_msk, u_msk, totalbad, blank=clargs.blank)
+    
+    if clargs.blank:
+        writefits(q_msk, u_msk, clargs)
 
 
 if __name__ == "__main__":
@@ -137,9 +162,9 @@ if __name__ == "__main__":
     ap.add_argument('qfitslist', help='Wildcard list of Q fits files')
     ap.add_argument('ufitslist', help='Wildcard list of U fits files')
     ap.add_argument(
-        '--delete',
-        '-d',
-        help='Delete bad channel maps? [default False]',
+        '--blank',
+        '-b',
+        help='Blank bad channel maps? [default False]',
         default=False,
         action='store_true'
     )
@@ -150,20 +175,13 @@ if __name__ == "__main__":
         default=5.,
         type=float
     )
-    group = ap.add_mutually_exclusive_group()
 
-    group.add_argument(
-        "--ncores",
-        dest="n_cores",
-        default=1,
-        type=int, help="Number of processes (uses multiprocessing)."
-    )
-    group.add_argument(
-        "--mpi",
-        dest="mpi",
-        default=False,
-        action="store_true",
-        help="Run with MPI."
+    ap.add_argument(
+        '--iterate',
+        '-i',
+        help='Iterate flagging check N additional times [None -- one pass only]',
+        default=None,
+        type=int
     )
 
     args = ap.parse_args()

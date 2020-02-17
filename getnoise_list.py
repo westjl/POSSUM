@@ -155,6 +155,10 @@ def main(clargs):
     if clargs.blank:
         writefits(q_msk, u_msk, clargs)
 
+    if clargs.file is not None:
+        prin(f'Saving bad files to {clargs.file}')
+        np.savetxt(clargs.file, totalbad)
+
 
 if __name__ == "__main__":
     import argparse
@@ -182,6 +186,14 @@ if __name__ == "__main__":
         help='Iterate flagging check N additional times [None -- one pass only]',
         default=None,
         type=int
+    )
+
+    ap.add_argument(
+        '--file',
+        '-f',
+        help='Filename to write bad channel indices to file [None --  do not write]',
+        default=None,
+        type=str
     )
 
     args = ap.parse_args()

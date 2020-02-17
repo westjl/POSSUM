@@ -260,23 +260,35 @@ def main(args, verbose=True):
         datadict[f"cube_{i}"]["oldbeams"] = Beams(beams['BMAJarcsec'][i].ravel(
         )*u.arcsec, beams['BMINarcsec'][i].ravel()*u.arcsec, beams['BPAdeg'][i].ravel()*u.deg)
 
+
+    if args.masklist is not None:
+        masklist = np.loadtxt(args.masklist) == 1
+        for i, _ in enumerate(beams['BMAJarcsec']):
+            beams['BMAJarcsec'][i][masklist] = np.nan
+            beams['BMINarcsec'][i][masklist] = np.nan
+            beams['BPAdeg'][i][masklist] = np.nan
+            datadict[f"cube_{i}"]["oldbeams"] = Beams(beams['BMAJarcsec'][i].ravel(
+            )*u.arcsec, beams['BMINarcsec'][i].ravel()*u.arcsec, beams['BPAdeg'][i].ravel()*u.deg)
+
+        #for chan in masklist:
+
     if not all(elem == nchans[0] for elem in nchans):
         raise Exception('Unequal channel count in beamlogs!')
 
     beamlst = Beams(beams['BMAJarcsec'].ravel(
     )*u.arcsec, beams['BMINarcsec'].ravel()*u.arcsec, beams['BPAdeg'].ravel()*u.deg)
 
-    big_beam = beamlst.largest_beam()
+    big_beam = beamlst[~np.isnan(beamlst)].common_beam()
     if verbose:
-        print(f'largest beam is', big_beam)
+        print(f'largest BMAX is', big_beam)
     # Parse args
     bmaj = args.bmaj
     bmin = args.bmin
     bpa = args.bpa
 
     # Set to largest
-    if bpa is None and bmin is not None and bmaj is not None:
-        bpa = big_beam.bpa.to(u.deg)
+    if bpa is None and bmin is None and bmaj is None:
+        bpa = big_beam.pa.to(u.deg)
     else:
         bpa = 0*u.deg
     if bmaj is None:
@@ -286,8 +298,8 @@ def main(args, verbose=True):
     else:
         bmaj *= u.arcsec
     if bmin is None:
-        bmin = round_up(big_beam.major.to(u.arcsec))
-    elif bmin*u.arcsec < round_up(big_beam.major.to(u.arcsec)):
+        bmin = round_up(big_beam.minor.to(u.arcsec))
+    elif bmin*u.arcsec < round_up(big_beam.minor.to(u.arcsec)):
         raise Exception('Selected BMIN is too small!')
     else:
         bmin *= u.arcsec
@@ -437,7 +449,16 @@ def cli():
         default=None,
         help="BPA to convolve to [0].")
 
+    parser.add_argument(
+        '-m',
+        '--mask',
+        dest='masklist',
+        type=str,
+        default=None,
+        help='List of channels to be masked [None]')
+
     group = parser.add_mutually_exclusive_group()
+
 
     group.add_argument("--ncores", dest="n_cores", default=1,
                        type=int, help="Number of processes (uses multiprocessing).")

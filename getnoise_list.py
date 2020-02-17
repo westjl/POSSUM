@@ -156,13 +156,20 @@ def main(clargs):
         writefits(q_msk, u_msk, clargs)
 
     if clargs.file is not None:
-        prin(f'Saving bad files to {clargs.file}')
+        print(f'Saving bad files to {clargs.file}')
         np.savetxt(clargs.file, totalbad)
 
 
 if __name__ == "__main__":
     import argparse
-    ap = argparse.ArgumentParser()
+    descStr = """
+    Find bad channels by checking statistics of each channel image.
+
+    """
+
+    # Parse the command line options
+    ap = argparse.ArgumentParser(description=descStr,
+                                     formatter_class=argparse.RawTextHelpFormatter)
     ap.add_argument('qfitslist', help='Wildcard list of Q fits files')
     ap.add_argument('ufitslist', help='Wildcard list of U fits files')
     ap.add_argument(

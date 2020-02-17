@@ -98,8 +98,8 @@ def savefile(datadict, filename, outdir='.', verbose=False):
         print(f'Saving to {outfile}')
     header = datadict['header']
     beam = datadict['final_beam']
-    header['BMIN'] = beam.minor.to(u.arcsec).value
-    header['BMAJ'] = beam.minor.to(u.arcsec).value
+    header['BMIN'] = beam.minor.to(u.deg).value
+    header['BMAJ'] = beam.minor.to(u.deg).value
     header['BPA'] = beam.pa.to(u.deg).value
     fits.writeto(outfile, datadict['newimage'], header=header, overwrite=True)
 

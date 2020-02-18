@@ -4,6 +4,11 @@ import astropy.units as u
 import numpy as np
 from spectral_cube import SpectralCube
 from tqdm import tqdm, trange
+import schwimmbad
+import time
+import warnings
+import functools
+print = functools.partial(print, flush=True)
 
 
 def myfit(x, y, fn):
@@ -36,9 +41,13 @@ def myfit(x, y, fn):
     return w
 
 
-def calcnoise(plane):
+def calcnoise(args):
     """Get noise in plane from cube.
     """
+    i, file = args
+    print(f'Checking channel {i}')
+    cube = getcube(file)
+    plane = cube[i]
     imsize = plane.shape
     assert len(imsize) == 2
     nx = imsize[-1]
@@ -75,18 +84,49 @@ def getcube(filename):
     return cube
 
 
-def getbadchans(qcube, ucube, cliplev=5):
+def getbadchans(pool, qcube, ucube, ufile, qfile, cliplev=5):
     """Find deviated channels
     """
     assert len(ucube.spectral_axis) == len(qcube.spectral_axis)
-    qnoisevals = []
-    for plane in tqdm(qcube, desc='Checking Q'):
-        qnoisevals.append(calcnoise(plane))
+
+    inputs = [[i, qfile] for i in range(len(qcube.spectral_axis))]
+    if (pool.__class__.__name__ is 'MPIPool' or
+            pool.__class__.__name__ is 'SerialPool'):
+        print(f'Checking Q...')
+        tic = time.perf_counter()
+        qnoisevals = list(
+            pool.map(calcnoise, inputs)
+        )
+        toc = time.perf_counter()
+        print(f'Time taken was {toc - tic}s')
+
+    elif pool.__class__.__name__ is 'MultiPool':
+        qnoisevals = list(tqdm(
+            pool.imap_unordered(calcnoise, inputs),
+            total=len(ucube.spectral_axis),
+            desc='Checking Q',
+        )
+        )
     qnoisevals = np.array(qnoisevals)
 
-    unoisevals = []
-    for plane in tqdm(ucube, desc='Checking U'):
-        unoisevals.append(calcnoise(plane))
+    inputs = [[i, ufile] for i in range(len(ucube.spectral_axis))]
+    if (pool.__class__.__name__ is 'MPIPool' or
+            pool.__class__.__name__ is 'SerialPool'):
+        print(f'Checking U...')
+        tic = time.perf_counter()
+        unoisevals = list(
+            pool.map(calcnoise, inputs)
+        )
+        toc = time.perf_counter()
+        print(f'Time taken was {toc - tic}s')
+
+    elif pool.__class__.__name__ is 'MultiPool':
+        unoisevals = list(tqdm(
+            pool.imap_unordered(calcnoise, inputs),
+            total=len(ucube.spectral_axis),
+            desc='Checking U',
+        )
+        )
     unoisevals = np.array(unoisevals)
 
     qmeannoise = np.median(qnoisevals[abs(qnoisevals) < 1.])
@@ -137,11 +177,13 @@ def writefits(qcube, ucube, clargs):
     print(f'Writing to {outfile}')
     ucube.write(outfile, format='fits', overwrite=True)
 
-def main(clargs):
+
+def main(pool, clargs):
     qcube = getcube(clargs.qfitslist)
     ucube = getcube(clargs.ufitslist)
 
-    totalbad = getbadchans(qcube, ucube, cliplev=clargs.cliplev)
+    totalbad = getbadchans(pool, qcube, ucube, clargs.qfitslist,
+                           clargs.ufitslist, cliplev=clargs.cliplev)
     # print fitslist[np.asarray(badones,dtype=int)]
 
     q_msk, u_msk = blankchans(qcube, ucube, totalbad, blank=clargs.blank)
@@ -150,8 +192,9 @@ def main(clargs):
         print(f'Iterating {clargs.iterate} additional time(s)...')
         for i in range(clargs.iterate):
             totalbad = getbadchans(q_msk, u_msk, cliplev=clargs.cliplev)
-            q_msk, u_msk = blankchans(q_msk, u_msk, totalbad, blank=clargs.blank)
-    
+            q_msk, u_msk = blankchans(
+                q_msk, u_msk, totalbad, blank=clargs.blank)
+
     if clargs.blank:
         writefits(q_msk, u_msk, clargs)
 
@@ -166,10 +209,18 @@ if __name__ == "__main__":
     Find bad channels by checking statistics of each channel image.
 
     """
+    warnings.filterwarnings(
+        "ignore", message="Cube is a Stokes cube, returning spectral cube for I component")
+    warnings.filterwarnings(
+        "ignore", message="Invalid value encountered in less")
+    warnings.filterwarnings(
+        "ignore", message="Invalid value encountered in greater")
+    warnings.filterwarnings(
+        "ignore", message="overflow encountered in square")
 
     # Parse the command line options
     ap = argparse.ArgumentParser(description=descStr,
-                                     formatter_class=argparse.RawTextHelpFormatter)
+                                 formatter_class=argparse.RawTextHelpFormatter)
     ap.add_argument('qfitslist', help='Wildcard list of Q fits files')
     ap.add_argument('ufitslist', help='Wildcard list of U fits files')
     ap.add_argument(
@@ -203,6 +254,22 @@ if __name__ == "__main__":
         type=str
     )
 
+    group = ap.add_mutually_exclusive_group()
+
+    group.add_argument("--ncores", dest="n_cores", default=1,
+                       type=int, help="Number of processes (uses multiprocessing).")
+    group.add_argument("--mpi", dest="mpi", default=False,
+                       action="store_true", help="Run with MPI.")
+
     args = ap.parse_args()
 
-    main(args)
+    pool = schwimmbad.choose_pool(
+        mpi=args.mpi, processes=args.n_cores)
+    if args.mpi:
+        if not pool.is_master():
+            pool.wait()
+            sys.exit(0)
+
+    main(pool, args)
+
+    pool.close()

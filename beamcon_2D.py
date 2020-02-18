@@ -187,8 +187,7 @@ def main(pool, args, verbose=False):
     bpa = args.bpa
 
     # Find largest bmax
-    if bmaj is None or bmin is None:
-        big_beam = getmaxbeam(files, verbose=verbose)
+    big_beam = getmaxbeam(files, verbose=verbose)
 
     # Set to largest
     if bpa is None and bmin is None and bmaj is None:

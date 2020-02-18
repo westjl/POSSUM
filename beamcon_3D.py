@@ -10,13 +10,15 @@ from spectral_cube import SpectralCube
 from radio_beam import Beam, Beams
 from glob import glob
 import schwimmbad
-import multiprocessing as mp
-import ctypes as c
 from tqdm import tqdm, trange
 import au2
 import functools
 from mpi4py import MPI
 print = functools.partial(print, flush=True)
+import warnings
+from spectral_cube.utils import SpectralCubeWarning
+warnings.filterwarnings(action='ignore', category=SpectralCubeWarning,
+                        append=True)
 
 
 class Error(OSError):
@@ -187,28 +189,17 @@ def cpu_to_use(max_cpu, count):
     return max(factors[factors <= max_cpu])
 
 
-def worker(idx, start):
-    newim = smooth(arr_in[idx], cubedict['dy'], cubedict['conbeams']
-                   [start+idx], cubedict['sfactors'][start+idx], verbose=False)
-    arr_out[idx] = newim[:]
+def worker(idx, start, cubedict):
+    cube = SpectralCube.read(cubedict["filename"])
+    plane = np.array(cube[start+idx])
+    newim = smooth(plane, cubedict['dy'], cubedict['conbeams'][start+idx], cubedict['sfactors'][start+idx], verbose=False)
+    return newim
 
 
-def init_worker():
-    # use global variables.
-    global arr_in
-    global arr_out
-    global cubedict
 
-
-def main(args, verbose=True):
+def main(pool, args, verbose=True):
     # Fix up outdir
     if args.mpi:
-        pool = schwimmbad.MPIPool()
-
-        if not pool.is_master():
-            pool.wait()
-            sys.exit(0)
-
         mpiComm = MPI.COMM_WORLD
         n_cores = mpiComm.Get_size()
         #mpiRank = mpiComm.Get_rank()
@@ -280,7 +271,7 @@ def main(args, verbose=True):
 
     big_beam = beamlst[~np.isnan(beamlst)].common_beam()
     if verbose:
-        print(f'largest BMAX is', big_beam)
+        print(f'largest common beam is', big_beam)
     # Parse args
     bmaj = args.bmaj
     bmin = args.bmin
@@ -316,14 +307,13 @@ def main(args, verbose=True):
         conbms, facs = getfacs(datadict[key], new_beam, verbose=False)
         cube = SpectralCube.read(datadict[key]["filename"])
         # Set up output file
-        outname = os.path.basename(
-            datadict[key]["filename"].replace('.fits', '.sm.fits'))
+        outname = "sm." + os.path.basename(datadict[key]["filename"])
         outfile = f'{outdir}/{outname}'
         if verbose:
             print(f'Initialsing to {outfile}')
-        copyfile(datadict[key]["filename"], outfile, verbose=True)
+        if not os.path.isfile(outfile):
+            copyfile(datadict[key]["filename"], outfile, verbose=True)
 
-        global cubedict
         cubedict = datadict[key]
         cubedict["conbeams"] = conbms
         cubedict["sfactors"] = facs
@@ -334,53 +324,16 @@ def main(args, verbose=True):
         width = cpu_to_use(width_max, cube.shape[0])
         n_chunks = cube.shape[0]//width
 
-        global arr_in
-        global arr_out
-
-        outshape = list(cube.shape)
-        outshape[0] = width
-
-        # shared, can be used from multiple processes
-        mp_arr_out = mp.Array(c.c_double, int(np.prod(outshape)))
-        # then in each new process create a new numpy array using:cp
-        # mp_arr and arr share the same memory
-        buff_arr_out = np.frombuffer(mp_arr_out.get_obj())
-        # make it two-dimensional
-        # b and arr share the same memory
-        arr_out = buff_arr_out.reshape(outshape)
-        arr_out[:] = np.zeros(outshape)*np.nan
-
-        inshape = list(cube.shape)
-        inshape[0] = width
-
-        mp_arr_in = mp.Array(c.c_double, int(np.prod(inshape)))
-        # then in each new process create a new numpy array using:
-        # mp_arr and arr share the same memory
-        buff_arr_in = np.frombuffer(mp_arr_in.get_obj())
-        # make it two-dimensional
-        # b and arr share the same memory
-        arr_in = buff_arr_in.reshape(inshape)
-        arr_in[:] = np.zeros(inshape)*np.nan
-
         for i in trange(
                 n_chunks, disable=(not verbose),
                 desc='Smoothing in chunks'
         ):
             start = i*width
             stop = start+width
-            # if verbose:
-            #print('Copying chunk of data to memory...')
-            arr_in[:] = cube[start:stop, :]
 
-            pool = schwimmbad.choose_pool(
-                mpi=args.mpi, processes=args.n_cores, initializer=init_worker)
-            if args.mpi:
-                if not pool.is_master():
-                    pool.wait()
-                    sys.exit(0)
-            func = functools.partial(worker, start=start)
-            list(pool.map(func, [idx for idx in range(width)]))
-            pool.close()
+            func = functools.partial(worker, start=start, cubedict=cubedict)
+            arr_out = list(pool.map(func, [idx for idx in range(width)]))
+            arr_out = np.array(arr_out)
 
             with fits.open(outfile, mode='update', memmap=True) as outfh:
                 outfh[0].data[start:stop,0,:,:] = arr_out[:]
@@ -469,7 +422,14 @@ def cli():
 
     verbose = args.verbose
 
-    main(args, verbose=verbose)
+    pool = schwimmbad.choose_pool(
+        mpi=args.mpi, processes=args.n_cores)
+    if args.mpi:
+        if not pool.is_master():
+            pool.wait()
+            sys.exit(0)
+
+    main(pool, args, verbose=verbose)
 
 
 if __name__ == "__main__":

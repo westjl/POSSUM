@@ -17,6 +17,11 @@ print = functools.partial(print, flush=True)
 #############################################
 
 
+def round_up(n, decimals=0):
+    multiplier = 10 ** decimals
+    return np.ceil(n * multiplier) / multiplier
+
+
 def getbeam(datadict, new_beam, verbose=False):
     """Get beam info
     """
@@ -84,7 +89,8 @@ def smooth(datadict, verbose=False):
 
     conbm1 = gauss_kern.array/gauss_kern.array.max()
 
-    newim = scipy.signal.convolve(datadict['image'].astype('f8'), conbm1, mode='same')
+    newim = scipy.signal.convolve(
+        datadict['image'].astype('f8'), conbm1, mode='same')
 
     newim *= datadict["sfactor"]
     return newim
@@ -109,11 +115,10 @@ def worker(args):
     if verbose:
         print(f'Working on {file}')
 
-
     outfile = os.path.basename(file)
     outfile = file.replace('.fits', '.sm.fits')
     if clargs.prefix is not None:
-        outfile =  clargs.prefix + outfile
+        outfile = clargs.prefix + outfile
     datadict = getimdata(file)
 
     conbeam, sfactor = getbeam(
@@ -219,6 +224,7 @@ def main(pool, args, verbose=False):
 
     if verbose:
         print('Done!')
+
 
 def cli():
     """Command-line interface

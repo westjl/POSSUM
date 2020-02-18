@@ -156,7 +156,7 @@ def getmaxbeam(files, verbose=False):
         [beam.pa.value for beam in beams]*u.deg
     )
 
-    return beams.largest_beam()
+    return beams.common_beam()
 
 
 def main(pool, args, verbose=False):
@@ -186,16 +186,22 @@ def main(pool, args, verbose=False):
         big_beam = getmaxbeam(files, verbose=verbose)
 
     # Set to largest
+    if bpa is None and bmin is None and bmaj is None:
+        bpa = big_beam.pa.to(u.deg)
+    else:
+        bpa = 0*u.deg
     if bmaj is None:
-        bmaj = big_beam.major.to(u.arcsec).round()
+        bmaj = round_up(big_beam.major.to(u.arcsec))
+    elif bmaj*u.arcsec < round_up(big_beam.major.to(u.arcsec)):
+        raise Exception('Selected BMAJ is too small!')
     else:
         bmaj *= u.arcsec
     if bmin is None:
-        bmin = big_beam.major.to(u.arcsec).round()
+        bmin = round_up(big_beam.minor.to(u.arcsec))
+    elif bmin*u.arcsec < round_up(big_beam.minor.to(u.arcsec)):
+        raise Exception('Selected BMIN is too small!')
     else:
         bmin *= u.arcsec
-    if bpa is None:
-        bpa = 0*u.deg
 
     new_beam = Beam(
         bmaj,

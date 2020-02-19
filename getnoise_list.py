@@ -50,12 +50,11 @@ def calcnoise(args):
     i, file, totalbad, update = args
     if update:
         print(f'Checking channel {i}')
-    if totalbad is not None:
-        if totalbad[i]:
-            return -1
+    if totalbad is not None and totalbad[i]:
+        return -1
     else:
         cube = getcube(file)
-        plane = cube[i]
+        plane = cube.unmasked_data[i]
         imsize = plane.shape
         assert len(imsize) == 2
         nx = imsize[-1]
@@ -78,7 +77,6 @@ def calcnoise(args):
             Iv = Ih[0]/float(max(Ih[0]))
             Inoise = myfit(Ix, Iv, '')
             return Inoise.value
-
 
 def getcube(filename):
     """Read FITS file as SpectralCube
@@ -117,7 +115,8 @@ def getbadchans(pool, qcube, ucube, ufile, qfile, totalbad=None, cliplev=5, upda
         )
     qnoisevals = np.array(qnoisevals)
 
-    inputs = [[i, ufile] for i in range(len(ucube.spectral_axis))]
+    inputs = [[i, ufile, totalbad, update]
+              for i in range(len(ucube.spectral_axis))]
     if (pool.__class__.__name__ is 'MPIPool' or
             pool.__class__.__name__ is 'SerialPool'):
         print(f'Checking U...')
@@ -136,7 +135,6 @@ def getbadchans(pool, qcube, ucube, ufile, qfile, totalbad=None, cliplev=5, upda
         )
         )
     unoisevals = np.array(unoisevals)
-
     qmeannoise = np.median(qnoisevals[abs(qnoisevals) < 1.])
     qstdnoise = np.std(qnoisevals[abs(qnoisevals) < 1.])
     print('Q median, std:', qmeannoise, qstdnoise)

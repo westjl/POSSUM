@@ -1,6 +1,7 @@
 from scipy import *
 import numpy as np
 import math
+# For getting fluxes right in Jy/beam
 
 
 def gaussianDeconvolve(smaj, smin, spa, bmaj, bmin, bpa):

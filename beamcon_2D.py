@@ -219,7 +219,6 @@ def main(pool, args, verbose=False):
               for i, file in enumerate(files)]
 
     output = list(pool.map(worker, inputs))
-    pool.close()
 
     if verbose:
         print('Done!')
@@ -306,6 +305,7 @@ def cli():
     verbose = args.verbose
 
     main(pool, args, verbose=verbose)
+    pool.close()
 
 
 if __name__ == "__main__":

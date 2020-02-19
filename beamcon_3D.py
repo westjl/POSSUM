@@ -15,7 +15,6 @@ import schwimmbad
 from tqdm import tqdm, trange
 import au2
 import functools
-from mpi4py import MPI
 print = functools.partial(print, flush=True)
 warnings.filterwarnings(action='ignore', category=SpectralCubeWarning,
                         append=True)
@@ -155,6 +154,8 @@ def smooth(image, dy, conbeam, sfactor, verbose=False):
     """
     if np.isnan(conbeam):
         return image*np.nan
+    if np.isnan(image).all():
+        return image
     else:
         # using Beams package
         if verbose:
@@ -191,7 +192,7 @@ def cpu_to_use(max_cpu, count):
 
 def worker(idx, start, cubedict):
     cube = SpectralCube.read(cubedict["filename"])
-    plane = np.array(cube[start+idx])
+    plane = cube.unmasked_data[start+idx].value
     newim = smooth(plane, cubedict['dy'], cubedict['conbeams']
                    [start+idx], cubedict['sfactors'][start+idx], verbose=False)
     return newim
@@ -200,6 +201,7 @@ def worker(idx, start, cubedict):
 def main(pool, args, verbose=True):
     # Fix up outdir
     if args.mpi:
+        from mpi4py import MPI
         mpiComm = MPI.COMM_WORLD
         n_cores = mpiComm.Get_size()
         #mpiRank = mpiComm.Get_rank()
@@ -229,7 +231,9 @@ def main(pool, args, verbose=True):
         dyas = header['CDELT2']*u.deg
         datadict[f"cube_{i}"]["dy"] = dyas
         # Get beam info
-        beamlog = f"beamlog.{file}".replace('.fits', '.txt')
+        dirname = os.path.dirname(file)
+        basename = os.path.basename(file)
+        beamlog = f"{dirname}/beamlog.{basename}".replace('.fits', '.txt')
         datadict[f"cube_{i}"]["beamlog"] = beamlog
         beam, nchan = getbeams(beamlog, verbose=verbose)
         # Find bad chans
@@ -242,6 +246,11 @@ def main(pool, args, verbose=True):
     beams = np.array(beams)
     nchans = np.array(nchans)
     # Do dome masking
+    beams['BMAJarcsec'][beams['BMAJarcsec'] == 0] = np.nan
+    beams['BMINarcsec'][beams['BMAJarcsec'] == 0] = np.nan
+    beams['BMINarcsec'][beams['BMINarcsec'] == 0] = np.nan
+    beams['BMAJarcsec'][beams['BMINarcsec'] == 0] = np.nan
+
     totalmask = sum(masks) > 0
 
     for i, _ in enumerate(beams['BMAJarcsec']):
@@ -428,6 +437,7 @@ def cli():
             sys.exit(0)
 
     main(pool, args, verbose=verbose)
+    pool.close()
 
 
 if __name__ == "__main__":

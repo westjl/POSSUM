@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import functools
 import astropy.units as u
 import numpy as np
 from spectral_cube import SpectralCube
@@ -7,7 +8,9 @@ from tqdm import tqdm, trange
 import schwimmbad
 import time
 import warnings
-import functools
+from spectral_cube.utils import SpectralCubeWarning
+warnings.filterwarnings(action='ignore', category=SpectralCubeWarning,
+                        append=True)
 print = functools.partial(print, flush=True)
 
 
@@ -44,32 +47,37 @@ def myfit(x, y, fn):
 def calcnoise(args):
     """Get noise in plane from cube.
     """
-    i, file = args
-    print(f'Checking channel {i}')
-    cube = getcube(file)
-    plane = cube[i]
-    imsize = plane.shape
-    assert len(imsize) == 2
-    nx = imsize[-1]
-    ny = imsize[-2]
-    Id = plane[ny//3:2*ny//3, nx//3:2*nx//3].flatten()
-    if len(Id[np.isnan(Id)]) == len(Id):
-        return -1.
+    i, file, totalbad, update = args
+    if update:
+        print(f'Checking channel {i}')
+    if totalbad is not None:
+        if totalbad[i]:
+            return -1
     else:
-        rms = np.std(Id)
-        mval = np.mean(Id)
-        Id = Id[np.logical_and(Id < mval+3.*rms, Id > mval-3.*rms)]
-        # print mval,rms,len(Id)
-
-        #hrange = (-1,1)
-        # , range=hrange) # 0 = values, 1 = left bin edges
-        Ih = np.histogram(Id, bins=100)
-        if max(Ih[0]) == 0.:
+        cube = getcube(file)
+        plane = cube[i]
+        imsize = plane.shape
+        assert len(imsize) == 2
+        nx = imsize[-1]
+        ny = imsize[-2]
+        Id = plane[ny//3:2*ny//3, nx//3:2*nx//3].flatten()
+        if len(Id[np.isnan(Id)]) == len(Id):
             return -1.
-        Ix = Ih[1][:-1] + 0.5*(Ih[1][1] - Ih[1][0])
-        Iv = Ih[0]/float(max(Ih[0]))
-        Inoise = myfit(Ix, Iv, '')
-        return Inoise.value
+        else:
+            rms = np.std(Id)
+            mval = np.mean(Id)
+            Id = Id[np.logical_and(Id < mval+3.*rms, Id > mval-3.*rms)]
+            # print mval,rms,len(Id)
+
+            #hrange = (-1,1)
+            # , range=hrange) # 0 = values, 1 = left bin edges
+            Ih = np.histogram(Id, bins=100)
+            if max(Ih[0]) == 0.:
+                return -1.
+            Ix = Ih[1][:-1] + 0.5*(Ih[1][1] - Ih[1][0])
+            Iv = Ih[0]/float(max(Ih[0]))
+            Inoise = myfit(Ix, Iv, '')
+            return Inoise.value
 
 
 def getcube(filename):
@@ -84,12 +92,12 @@ def getcube(filename):
     return cube
 
 
-def getbadchans(pool, qcube, ucube, ufile, qfile, cliplev=5):
+def getbadchans(pool, qcube, ucube, ufile, qfile, totalbad=None, cliplev=5, update=False):
     """Find deviated channels
     """
     assert len(ucube.spectral_axis) == len(qcube.spectral_axis)
-
-    inputs = [[i, qfile] for i in range(len(qcube.spectral_axis))]
+    inputs = [[i, qfile, totalbad, update]
+              for i in range(len(qcube.spectral_axis))]
     if (pool.__class__.__name__ is 'MPIPool' or
             pool.__class__.__name__ is 'SerialPool'):
         print(f'Checking Q...')
@@ -182,8 +190,15 @@ def main(pool, clargs):
     qcube = getcube(clargs.qfitslist)
     ucube = getcube(clargs.ufitslist)
 
+    totalbad = None
+
+    if clargs.mpi or clargs.n_cores == 1:
+        update = True
+    else:
+        update = False
+
     totalbad = getbadchans(pool, qcube, ucube, clargs.qfitslist,
-                           clargs.ufitslist, cliplev=clargs.cliplev)
+                           clargs.ufitslist, totalbad=totalbad, cliplev=clargs.cliplev, update=update)
     # print fitslist[np.asarray(badones,dtype=int)]
 
     q_msk, u_msk = blankchans(qcube, ucube, totalbad, blank=clargs.blank)
@@ -191,7 +206,8 @@ def main(pool, clargs):
     if clargs.iterate is not None:
         print(f'Iterating {clargs.iterate} additional time(s)...')
         for i in range(clargs.iterate):
-            totalbad = getbadchans(q_msk, u_msk, cliplev=clargs.cliplev)
+            totalbad = getbadchans(pool, q_msk, u_msk, clargs.qfitslist,
+                                   clargs.ufitslist, totalbad=totalbad, cliplev=clargs.cliplev, update=update)
             q_msk, u_msk = blankchans(
                 q_msk, u_msk, totalbad, blank=clargs.blank)
 

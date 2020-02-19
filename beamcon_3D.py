@@ -1,4 +1,6 @@
 #!/usr/bin/env python
+from spectral_cube.utils import SpectralCubeWarning
+import warnings
 import os
 import stat
 import sys
@@ -15,8 +17,6 @@ import au2
 import functools
 from mpi4py import MPI
 print = functools.partial(print, flush=True)
-import warnings
-from spectral_cube.utils import SpectralCubeWarning
 warnings.filterwarnings(action='ignore', category=SpectralCubeWarning,
                         append=True)
 
@@ -156,7 +156,7 @@ def smooth(image, dy, conbeam, sfactor, verbose=False):
     if np.isnan(conbeam):
         return image*np.nan
     else:
-    # using Beams package
+        # using Beams package
         if verbose:
             print(f'Using convolving beam', conbeam)
         pix_scale = dy
@@ -192,9 +192,9 @@ def cpu_to_use(max_cpu, count):
 def worker(idx, start, cubedict):
     cube = SpectralCube.read(cubedict["filename"])
     plane = np.array(cube[start+idx])
-    newim = smooth(plane, cubedict['dy'], cubedict['conbeams'][start+idx], cubedict['sfactors'][start+idx], verbose=False)
+    newim = smooth(plane, cubedict['dy'], cubedict['conbeams']
+                   [start+idx], cubedict['sfactors'][start+idx], verbose=False)
     return newim
-
 
 
 def main(pool, args, verbose=True):
@@ -251,7 +251,6 @@ def main(pool, args, verbose=True):
         datadict[f"cube_{i}"]["oldbeams"] = Beams(beams['BMAJarcsec'][i].ravel(
         )*u.arcsec, beams['BMINarcsec'][i].ravel()*u.arcsec, beams['BPAdeg'][i].ravel()*u.deg)
 
-
     if args.masklist is not None:
         masklist = np.loadtxt(args.masklist) == 1
         for i, _ in enumerate(beams['BMAJarcsec']):
@@ -261,7 +260,7 @@ def main(pool, args, verbose=True):
             datadict[f"cube_{i}"]["oldbeams"] = Beams(beams['BMAJarcsec'][i].ravel(
             )*u.arcsec, beams['BMINarcsec'][i].ravel()*u.arcsec, beams['BPAdeg'][i].ravel()*u.deg)
 
-        #for chan in masklist:
+        # for chan in masklist:
 
     if not all(elem == nchans[0] for elem in nchans):
         raise Exception('Unequal channel count in beamlogs!')
@@ -336,14 +335,14 @@ def main(pool, args, verbose=True):
             arr_out = np.array(arr_out)
 
             with fits.open(outfile, mode='update', memmap=True) as outfh:
-                outfh[0].data[start:stop,0,:,:] = arr_out[:]
+                outfh[0].data[start:stop, 0, :, :] = arr_out[:]
                 outfh.flush()
 
         if verbose:
             print('Updating header...')
         with fits.open(outfile, mode='update', memmap=True) as outfh:
-                outfh[0].header = new_beam.attach_to_header(outfh[0].header)
-                outfh.flush()
+            outfh[0].header = new_beam.attach_to_header(outfh[0].header)
+            outfh.flush()
         # print(arr_out)
 
 
@@ -411,7 +410,6 @@ def cli():
         help='List of channels to be masked [None]')
 
     group = parser.add_mutually_exclusive_group()
-
 
     group.add_argument("--ncores", dest="n_cores", default=1,
                        type=int, help="Number of processes (uses multiprocessing).")

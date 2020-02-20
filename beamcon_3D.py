@@ -236,6 +236,10 @@ def main(pool, args, verbose=True):
         beamlog = f"{dirname}/beamlog.{basename}".replace('.fits', '.txt')
         datadict[f"cube_{i}"]["beamlog"] = beamlog
         beam, nchan = getbeams(beamlog, verbose=verbose)
+        if args.cutoff is not None:
+            frac = len([beam['BMAJarcsec'].ravel() > args.cutoff])/len(beam['BMAJarcsec'].ravel())
+            if verbose:
+                print(f'Cutoff will blank {round(frac*100,2)}% of channels in {basename}')
         # Find bad chans
         cube = SpectralCube.read(file)
         mask = cube[:, cube.shape[1]//2, cube.shape[2]//2].mask.view()
@@ -250,6 +254,13 @@ def main(pool, args, verbose=True):
     beams['BMINarcsec'][beams['BMAJarcsec'] == 0] = np.nan
     beams['BMINarcsec'][beams['BMINarcsec'] == 0] = np.nan
     beams['BMAJarcsec'][beams['BMINarcsec'] == 0] = np.nan
+
+    if args.cutoff is not None:
+        frac = len([beams['BMAJarcsec'].ravel() > args.cutoff])/len(beams['BMAJarcsec'].ravel())
+        if verbose:
+            print(f'Cutoff will blank {round(frac*100,2)}% of channels, in all cubes')
+        beams['BMAJarcsec'][beams['BMAJarcsec'] > args.cutoff] = np.nan
+        beams['BMINarcsec'][beams['BMAJarcsec'] > args.cutoff] = np.nan
 
     totalmask = sum(masks) > 0
 
@@ -417,6 +428,14 @@ def cli():
         type=str,
         default=None,
         help='List of channels to be masked [None]')
+
+    parser.add_argument(
+        '-c',
+        '--cutoff',
+        dest='cutoff',
+        type=float,
+        default=None,
+        help='Cutoff BMAJ value -- Blank channels with BMAJ larger than this [None -- no limit]')
 
     group = parser.add_mutually_exclusive_group()
 

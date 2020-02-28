@@ -1,0 +1,3 @@
+[submodule "RACS-tools"]
+	path = RACS-tools
+	url = https://github.com/AlecThomson/RACS-tools.git
